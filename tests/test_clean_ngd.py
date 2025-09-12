@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for NGD data cleaning functionality."""
+"""Tests for NGD data cleaning functionality using shared sqlite_cleaner."""
 
 import pytest
 import sqlite3
@@ -7,16 +7,17 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
+from unittest.mock import patch, Mock
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-from clean_ngd import NGDCleaner
-from normalization import RobustAPIClient
+import clean_ngd
+from sqlite_cleaner import clean_sqlite_curie_to_pmids
 
 
-class TestNGDCleaner:
-    """Test class for NGD data cleaning."""
+class TestNGDCleaningIntegration:
+    """Integration tests for NGD cleaning using shared module."""
     
     def setup_method(self):
         """Set up test fixtures."""
@@ -31,183 +32,109 @@ class TestNGDCleaner:
         self.test_db_path = self.input_dir / "test.sqlite"
         self.create_test_database()
         
-        # Initialize cleaner
-        self.cleaner = NGDCleaner(str(self.test_db_path), str(self.output_dir))
-        
     def teardown_method(self):
         """Clean up test fixtures."""
-        shutil.rmtree(self.temp_dir)
+        if Path(self.temp_dir).exists():
+            shutil.rmtree(self.temp_dir)
         
     def create_test_database(self):
-        """Create a test SQLite database with sample data."""
+        """Create a test SQLite database with NGD format."""
         conn = sqlite3.connect(self.test_db_path)
         cursor = conn.cursor()
         
-        # Create table
+        # Create table with NGD schema
         cursor.execute("CREATE TABLE curie_to_pmids (curie TEXT, pmids TEXT)")
         cursor.execute("CREATE UNIQUE INDEX unique_curie ON curie_to_pmids (curie)")
         
-        # Insert test data
+        # Insert test data matching NGD format
         test_data = [
-            ("NCBITaxon:5322", "[25506817, 30584069, 38317964]"),
-            ("CHV:0000030710", "[38371111, 38179018, 38988429]"),
-            ("NCBIGene:729359", "[37140993, 29500419, 38677512]"),
-            ("DUPLICATE:123", "[11111, 22222]"),  # Will normalize to same as DUPLICATE:456
-            ("DUPLICATE:456", "[33333, 44444]"),  # Will normalize to same as DUPLICATE:123
+            ("MESH:D014867", "[12345, 67890]"),  # Water
+            ("CHEMBL.COMPOUND:CHEMBL1098659", "[11111]"),  # Also water (will merge)
+            ("MONDO:0004976", "[33333, 44444]"),  # ALS
         ]
         
         cursor.executemany("INSERT INTO curie_to_pmids (curie, pmids) VALUES (?, ?)", test_data)
         conn.commit()
         conn.close()
+    
+    @patch('sqlite_cleaner.CurieNormalizer')
+    def test_ngd_main_function(self, mock_normalizer_class):
+        """Test the NGD main function integration."""
+        # Setup mock
+        mock_normalizer = Mock()
+        mock_normalizer.normalize_all_curies.return_value = {
+            "MESH:D014867": "CHEBI:15377",  # Water
+            "CHEMBL.COMPOUND:CHEMBL1098659": "CHEBI:15377",  # Same concept
+            "MONDO:0004976": "MONDO:0004976"  # ALS
+        }
+        mock_normalizer.get_failed_normalizations_dict.return_value = {}
+        mock_normalizer.get_failed_normalizations.return_value = []
+        mock_normalizer.get_biolink_classes.return_value = {
+            "CHEBI:15377": ["biolink:SmallMolecule"],
+            "MONDO:0004976": ["biolink:Disease"]
+        }
+        mock_normalizer_class.return_value = mock_normalizer
         
-    def test_extract_data_in_chunks(self):
-        """Test extracting data from SQLite database in chunks."""
-        chunks = list(self.cleaner.extract_data_in_chunks(chunk_size=3))
-        
-        # Should have 2 chunks (3 + 2 records)
-        assert len(chunks) == 2
-        assert len(chunks[0]) == 3
-        assert len(chunks[1]) == 2
-        
-        # Check that all data is present across chunks
-        all_curies = set()
-        for chunk in chunks:
-            all_curies.update(chunk.keys())
-        
-        assert "NCBITaxon:5322" in all_curies
-        assert "CHV:0000030710" in all_curies
-        assert len(all_curies) == 5
-        
-    def test_extract_data_malformed_pmids(self):
-        """Test handling of malformed PMID data in chunks."""
-        # Create database with malformed data
-        conn = sqlite3.connect(self.test_db_path)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO curie_to_pmids (curie, pmids) VALUES (?, ?)", 
-                      ("MALFORMED:123", "not a list"))
-        conn.commit()
-        conn.close()
-        
-        # Should handle gracefully - malformed entries skipped
-        chunks = list(self.cleaner.extract_data_in_chunks())
-        all_curies = set()
-        for chunk in chunks:
-            all_curies.update(chunk.keys())
-        assert "MALFORMED:123" not in all_curies
-        
-    def test_normalize_curies_success(self):
-        """Test successful CURIE normalization with real API calls."""
-        # Use real, known CURIEs that should normalize successfully
-        test_curies = ["NCBIGene:1017", "MONDO:0007739", "CHEBI:15365"]
-        test_data = {curie: [12345] for curie in test_curies}
-        result = self.cleaner.normalizer.normalize_curies(test_curies, test_data)
-        
-        # Verify we got mappings for all CURIEs
-        assert len(result) == 3
-        for curie in test_curies:
-            assert curie in result
-            assert result[curie]  # Should have some normalized identifier
-            
-        # Log results for verification
-        print(f"Normalization results: {result}")
-        
-    def test_normalize_curies_with_invalid_curie(self):
-        """Test handling of invalid/unknown CURIEs in real API calls."""
-        # Mix of valid and invalid CURIEs
-        test_curies = ["NCBIGene:1017", "INVALID:123456", "MONDO:0007739"]
-        test_data = {curie: [12345] for curie in test_curies}
-        result = self.cleaner.normalizer.normalize_curies(test_curies, test_data)
-        
-        # Should return mappings only for valid CURIEs (invalid ones are excluded)
-        assert len(result) == 2  # Only valid CURIEs should be in result
-        assert "NCBIGene:1017" in result  # Should be normalized
-        assert "INVALID:123456" not in result  # Invalid CURIE excluded
-        assert "MONDO:0007739" in result  # Should be normalized
-        
-    def test_api_client_retry_logic(self):
-        """Test the retry logic with a smaller timeout to trigger retries."""
-        # Create API client with very short timeout to test retry behavior
-        api_client = RobustAPIClient(
-            "https://nodenormalization-sri.renci.org/get_normalized_nodes",
-            max_retries=2,
-            base_delay=0.1,
-            max_delay=1.0
+        # Test the function interface directly
+        records_written = clean_sqlite_curie_to_pmids(
+            input_sqlite_path=str(self.test_db_path),
+            output_dir=str(self.output_dir),
+            dataset_name="ngd"
         )
         
-        payload = {
-            "curies": ["NCBIGene:1017"],
-            "conflate": True,
-            "drug_chemical_conflate": True
-        }
+        # Should write 2 records (merged water + ALS)
+        assert records_written == 2
         
-        # This should work with normal timeout
-        result = api_client.post_with_retry(payload, timeout=60)
-        assert "NCBIGene:1017" in result
-        
-    def test_build_complete_normalization_mapping(self):
-        """Test building complete normalization mapping."""
-        mapping = self.cleaner.build_complete_normalization_mapping()
-        
-        # Should have mappings only for CURIEs that successfully normalize
-        assert len(mapping) >= 1  # At least some should normalize
-        
-        # All mapped CURIEs should have valid normalized identifiers
-        for original, normalized in mapping.items():
-            assert isinstance(original, str)
-            assert isinstance(normalized, str)
-            assert ":" in normalized  # Should be a valid CURIE format
-        
-    def test_full_pipeline_integration(self):
-        """Test the complete cleaning pipeline with real API calls."""
-        # Run the pipeline on our small test dataset
-        self.cleaner.clean()
-        
-        # Verify output file was created
+        # Check output files
         output_file = self.output_dir / "ngd_cleaned.jsonl"
         assert output_file.exists()
         
-        # Read and verify output
-        with open(output_file) as f:
-            lines = [json.loads(line.strip()) for line in f]
+        # Verify output content
+        with open(output_file, 'r') as f:
+            lines = f.readlines()
+            assert len(lines) == 2
             
-        # Should have entries for successfully normalized CURIEs
-        assert len(lines) >= 1  # At least 1 unique normalized CURIE
-        
-        # Verify structure of output
-        for item in lines:
-            assert "curie" in item
-            assert "publications" in item
-            assert isinstance(item["publications"], list)
+            records = [json.loads(line) for line in lines]
+            records_by_curie = {r["curie"]: r for r in records}
             
-            # Verify PMID format
-            for pub in item["publications"]:
-                assert pub.startswith("PMID:")
-                
-        # Print results for inspection
-        print(f"Pipeline produced {len(lines)} normalized entries")
-        for item in lines[:3]:  # Show first 3 entries
-            print(f"  {item['curie']}: {len(item['publications'])} publications")
-                
-    def test_empty_database(self):
-        """Test handling of empty database."""
-        # Create empty database
-        conn = sqlite3.connect(self.test_db_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM curie_to_pmids")
-        conn.commit()
-        conn.close()
+            # Check merged water record
+            water_record = records_by_curie["CHEBI:15377"]
+            assert set(water_record["original_curies"]) == {"MESH:D014867", "CHEMBL.COMPOUND:CHEMBL1098659"}
+            # All PMIDs from both sources should be merged
+            expected_pmids = {"PMID:12345", "PMID:67890", "PMID:11111"}
+            assert set(water_record["publications"]) == expected_pmids
+            
+            # Check ALS record
+            als_record = records_by_curie["MONDO:0004976"]
+            assert als_record["original_curies"] == ["MONDO:0004976"]
+            assert set(als_record["publications"]) == {"PMID:33333", "PMID:44444"}
+    
+    @patch('sqlite_cleaner.CurieNormalizer')
+    @patch('clean_ngd.logger')
+    def test_ngd_main_script_integration(self, mock_logger, mock_normalizer_class):
+        """Test running the NGD main script with mocked paths."""
+        # Setup mock
+        mock_normalizer = Mock()
+        mock_normalizer.normalize_all_curies.return_value = {"MESH:D014867": "CHEBI:15377"}
+        mock_normalizer.get_failed_normalizations_dict.return_value = {}
+        mock_normalizer.get_failed_normalizations.return_value = []
+        mock_normalizer.get_biolink_classes.return_value = {"CHEBI:15377": ["biolink:SmallMolecule"]}
+        mock_normalizer_class.return_value = mock_normalizer
         
-        chunks = list(self.cleaner.extract_data_in_chunks())
-        assert len(chunks) == 0
-        
-    def test_chunked_processing_workflow(self):
-        """Test the chunked processing workflow components."""
-        # Test that we can build normalization mapping
-        mapping = self.cleaner.build_complete_normalization_mapping()
-        
-        # Test that we can extract data in chunks
-        chunks = list(self.cleaner.extract_data_in_chunks(chunk_size=2))
-        assert len(chunks) >= 2  # Should have multiple chunks
-        
-        # Verify we have some normalizable CURIEs
-        assert len(mapping) >= 1
+        # Temporarily patch the paths in the main function
+        with patch.object(clean_ngd, '__name__', '__main__'), \
+             patch('clean_ngd.clean_sqlite_curie_to_pmids') as mock_clean_func:
+            
+            mock_clean_func.return_value = 1
+            
+            # This would normally be called by if __name__ == "__main__"
+            # but we can test the main function directly
+            clean_ngd.main()
+            
+            # Verify the function was called with expected parameters
+            mock_clean_func.assert_called_once()
+            call_args = mock_clean_func.call_args
+            assert "ngd" in call_args.kwargs['dataset_name']
+            assert "input/ngd/" in call_args.kwargs['input_sqlite_path']
+            assert "cleaned/ngd" in call_args.kwargs['output_dir']
+    
