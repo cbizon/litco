@@ -17,13 +17,10 @@ import logging
 import json
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Set
+from typing import Dict, List
 
 from normalization import (
     CurieNormalizer,
-    merge_normalized_data,
-    convert_to_output_format,
-    convert_failed_to_output_format,
     write_biolink_classes
 )
 
@@ -43,8 +40,7 @@ class PubTatorCleaner:
         # Initialize CURIE normalizer
         self.normalizer = CurieNormalizer()
         
-        # Track data and statistics
-        self.curie_to_pmids = defaultdict(set)
+        # Track statistics only (data will be processed in chunks)
         self.concept_id_stats = defaultdict(int)
         self.type_stats = defaultdict(int)
         self.invalid_concept_ids = defaultdict(int)
@@ -87,172 +83,244 @@ class PubTatorCleaner:
                 self.constructed_curies[f"{entity_type}->UNKNOWN"] += 1
                 return curie
         
-        # Other formats - log and return as-is with warning
-        logger.warning(f"Unusual concept ID format: '{concept_id}' (type: {entity_type})")
-        self.constructed_curies[f"{entity_type}->UNUSUAL"] += 1
+        # Handle common non-colon formats
+        if concept_id.startswith("CVCL_"):
+            # Cell Line Ontology identifiers - use CLO prefix
+            curie = concept_id.replace("CVCL_", "CLO:", 1)
+            self.constructed_curies[f"CVCL_->CLO"] += 1
+            return curie
+        
+        # Other unusual formats - return as-is without warning
+        self.constructed_curies[f"{entity_type}->OTHER"] += 1
         return concept_id
     
-    def process_file_streaming(self):
-        """Process the gzipped file in streaming fashion for memory efficiency."""
-        logger.info(f"Processing {self.input_file} in streaming mode")
-        
+    def _parse_line(self, line: str, line_num: int) -> tuple:
+        """Parse a single line and return (pmid, curie) or (None, None) if invalid."""
+        line = line.strip()
+        if not line:
+            return None, None
+            
+        try:
+            parts = line.split('\t')
+            if len(parts) != 5:
+                return None, None
+            
+            pmid_str, entity_type, concept_id, mentions, resource = parts
+            
+            # Parse PMID
+            try:
+                pmid = int(pmid_str)
+            except ValueError:
+                return None, None
+            
+            # Track statistics
+            self.type_stats[entity_type] += 1
+            self.concept_id_stats[concept_id] += 1
+            
+            # Convert concept ID to CURIE
+            curie = self.convert_concept_id_to_curie(concept_id, entity_type)
+            
+            if curie is None:
+                self.invalid_concept_ids[concept_id] += 1
+                return None, None
+            
+            return pmid, curie
+            
+        except Exception as e:
+            logger.error(f"Error processing line {line_num}: {e}")
+            return None, None
+    
+    def process_file_streaming(self) -> Dict[str, List[int]]:
+        """Process file and return curie_to_pmids mapping (for testing)."""
+        curie_to_pmids = defaultdict(list)
         total_lines = 0
-        valid_lines = 0
         
         with gzip.open(self.input_file, 'rt') as f:
             for line_num, line in enumerate(f, 1):
                 total_lines += 1
                 
-                if total_lines % 10000000 == 0:  # Progress every 10M lines
-                    logger.info(f"Processed {total_lines:,} lines, valid: {valid_lines:,}")
-                
-                line = line.strip()
-                if not line:
-                    continue
-                
-                try:
-                    # Split on tab - expect 5 columns
-                    parts = line.split('\t')
-                    if len(parts) != 5:
-                        logger.warning(f"Line {line_num} has {len(parts)} columns, expected 5")
-                        continue
+                pmid, curie = self._parse_line(line, line_num)
+                if pmid is not None and curie is not None:
+                    curie_to_pmids[curie].append(pmid)
                     
-                    pmid_str, entity_type, concept_id, mentions, resource = parts
-                    
-                    # Parse PMID
-                    try:
-                        pmid = int(pmid_str)
-                    except ValueError:
-                        logger.warning(f"Invalid PMID on line {line_num}: '{pmid_str}'")
-                        continue
-                    
-                    # Track statistics
-                    self.type_stats[entity_type] += 1
-                    self.concept_id_stats[concept_id] += 1
-                    
-                    # Convert concept ID to CURIE
-                    curie = self.convert_concept_id_to_curie(concept_id, entity_type)
-                    
-                    if curie is None:
-                        # Track invalid concept IDs
-                        self.invalid_concept_ids[concept_id] += 1
-                        continue
-                    
-                    # Store in our data structure
-                    self.curie_to_pmids[curie].add(pmid)
-                    valid_lines += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error processing line {line_num}: {e}")
-                    logger.error(f"Line content: {line}")
-                    
-        logger.info(f"Finished processing. Total lines: {total_lines:,}, Valid: {valid_lines:,}")
-        logger.info(f"Extracted {len(self.curie_to_pmids):,} unique CURIEs")
+        return dict(curie_to_pmids)
+    
+    def build_complete_normalization_mapping(self) -> Dict[str, str]:
+        """First pass: collect all CURIEs and build complete normalization mapping."""
+        logger.info("Building complete normalization mapping (Pass 1)")
         
-        # Convert sets to lists for compatibility with normalizer
-        curie_to_pmids_list = {curie: list(pmids) for curie, pmids in self.curie_to_pmids.items()}
-        return curie_to_pmids_list
+        all_curies = set()
+        total_lines = 0
+        
+        with gzip.open(self.input_file, 'rt') as f:
+            for line_num, line in enumerate(f, 1):
+                total_lines += 1
+                
+                if total_lines % 5000000 == 0:
+                    logger.info(f"Pass 1: {total_lines:,} lines processed, {len(all_curies):,} unique CURIEs found")
+                
+                pmid, curie = self._parse_line(line, line_num)
+                if curie is not None:
+                    all_curies.add(curie)
+                    
+        logger.info(f"Pass 1 complete: {total_lines:,} lines, {len(all_curies):,} unique CURIEs")
+        
+        # Normalize all CURIEs
+        dummy_pmid_data = {curie: [] for curie in all_curies}
+        complete_mapping = self.normalizer.normalize_all_curies(dummy_pmid_data)
+        
+        logger.info(f"Normalized {len(complete_mapping):,} CURIEs successfully")
+        return complete_mapping
+    
+    def process_file_streaming_chunked(self, normalization_mapping: Dict[str, str]):
+        """Process file in streaming chunks, writing complete records immediately."""
+        logger.info("Starting Pass 2: chunked processing")
+        
+        # Build reverse mapping: normalized_curie -> set of original_curies
+        normalized_to_originals = defaultdict(set)
+        for orig, norm in normalization_mapping.items():
+            normalized_to_originals[norm].add(orig)
+        
+        logger.info(f"Found {len(normalized_to_originals):,} normalized CURIEs")
+        
+        # Track progress: normalized_curie -> (seen_originals, pmids_so_far)
+        progress_tracker = {}
+        for norm_curie in normalized_to_originals:
+            progress_tracker[norm_curie] = (set(), set())  # (seen_originals, pmids)
+        
+        records_written = 0
+        total_lines = 0
+        
+        # Open output file for streaming writes
+        output_path = self.output_dir / "pubtator_cleaned.jsonl"
+        
+        with open(output_path, 'w') as output_file:
+            with gzip.open(self.input_file, 'rt') as f:
+                for line_num, line in enumerate(f, 1):
+                    total_lines += 1
+                    
+                    if total_lines % 10000000 == 0:
+                        logger.info(f"Pass 2: {total_lines:,} lines, {records_written:,} records written")
+                    
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    try:
+                        # Split on tab - expect 5 columns
+                        parts = line.split('\t')
+                        if len(parts) != 5:
+                            continue
+                        
+                        pmid_str, entity_type, concept_id, mentions, resource = parts
+                        
+                        # Parse PMID
+                        try:
+                            pmid = int(pmid_str)
+                        except ValueError:
+                            continue
+                        
+                        # Convert concept ID to CURIE
+                        curie = self.convert_concept_id_to_curie(concept_id, entity_type)
+                        
+                        if curie is None or curie not in normalization_mapping:
+                            continue
+                        
+                        normalized_curie = normalization_mapping[curie]
+                        seen_originals, accumulated_pmids = progress_tracker[normalized_curie]
+                        
+                        # Add this original CURIE and its PMID
+                        seen_originals.add(curie)
+                        accumulated_pmids.add(pmid)
+                        
+                        # Check if we've seen all original CURIEs for this normalized CURIE
+                        expected_originals = normalized_to_originals[normalized_curie]
+                        if seen_originals == expected_originals:
+                            # Complete! Write record and free memory
+                            record = {
+                                "curie": normalized_curie,
+                                "original_curies": sorted(expected_originals),
+                                "publications": [f"PMID:{pmid}" for pmid in sorted(accumulated_pmids)]
+                            }
+                            output_file.write(json.dumps(record) + '\n')
+                            del progress_tracker[normalized_curie]  # Free memory
+                            records_written += 1
+                            
+                            if records_written % 50000 == 0:
+                                logger.info(f"Written {records_written:,} records")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing line {line_num}: {e}")
+        
+        logger.info(f"Pass 2 complete: {total_lines:,} lines, {records_written:,} records written")
+        return records_written
     
     def log_statistics(self):
-        """Log detailed statistics about the data processing."""
+        """Log processing statistics."""
         logger.info("=== PROCESSING STATISTICS ===")
         
-        logger.info(f"Entity types found:")
+        logger.info("Entity type distribution:")
         for entity_type, count in sorted(self.type_stats.items(), key=lambda x: x[1], reverse=True):
             logger.info(f"  {entity_type}: {count:,}")
         
-        logger.info(f"CURIE construction patterns:")
-        for pattern, count in sorted(self.constructed_curies.items(), key=lambda x: x[1], reverse=True):
-            logger.info(f"  {pattern}: {count:,}")
+        if self.constructed_curies:
+            logger.info("CURIE construction patterns:")
+            for pattern, count in sorted(self.constructed_curies.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {pattern}: {count:,}")
         
-        logger.info(f"Most common invalid concept IDs:")
-        for concept_id, count in list(sorted(self.invalid_concept_ids.items(), key=lambda x: x[1], reverse=True))[:10]:
-            logger.info(f"  '{concept_id}': {count:,}")
-        
-        # Show some example constructed CURIEs for verification
-        logger.info(f"Example CURIEs constructed:")
-        example_count = 0
-        for curie in self.curie_to_pmids.keys():
-            if any(prefix in curie for prefix in ["NCBITaxon:", "NCBIGene:", "OMIM:", "UNKNOWN_"]):
-                logger.info(f"  {curie} -> {len(self.curie_to_pmids[curie])} PMIDs")
-                example_count += 1
-                if example_count >= 10:
-                    break
+        if self.invalid_concept_ids:
+            invalid_count = sum(self.invalid_concept_ids.values())
+            logger.info(f"Invalid concept IDs: {invalid_count:,} total")
     
     def analyze_normalization_failures(self):
-        """Analyze normalization failures to identify CURIE construction issues."""
-        failed_normalizations = self.normalizer.get_failed_normalizations()
+        """Analyze normalization failures."""
+        failed_normalizations = self.normalizer.get_failed_normalizations_dict()
         
         if not failed_normalizations:
-            logger.info("No normalization failures to analyze")
+            logger.info("No normalization failures")
             return
         
-        logger.info("=== NORMALIZATION FAILURE ANALYSIS ===")
-        logger.info(f"Total failed normalizations: {len(failed_normalizations):,}")
+        logger.info(f"=== NORMALIZATION FAILURES: {len(failed_normalizations):,} total ===")
         
         # Categorize failures by prefix
         failure_patterns = defaultdict(int)
-        prefix_failures = defaultdict(list)
-        
         for failed_curie in failed_normalizations.keys():
-            if ":" in failed_curie:
-                prefix = failed_curie.split(":")[0]
-                failure_patterns[prefix] += 1
-                prefix_failures[prefix].append(failed_curie)
-            else:
-                failure_patterns["NO_PREFIX"] += 1
-                prefix_failures["NO_PREFIX"].append(failed_curie)
+            prefix = failed_curie.split(":")[0] if ":" in failed_curie else "NO_PREFIX"
+            failure_patterns[prefix] += 1
         
-        logger.info("Failure patterns by prefix:")
+        logger.info("Failure patterns:")
         for prefix, count in sorted(failure_patterns.items(), key=lambda x: x[1], reverse=True):
             logger.info(f"  {prefix}: {count:,}")
-            
-            # Show examples
-            examples = prefix_failures[prefix][:5]
-            for example in examples:
-                pmid_count = len(failed_normalizations[example])
-                logger.info(f"    Example: {example} ({pmid_count} PMIDs)")
         
-        # Special analysis for our constructed CURIEs
+        # Check constructed CURIE failures
         constructed_failures = {k: v for k, v in failed_normalizations.items() 
                               if any(pattern in k for pattern in ["UNKNOWN_", "OMIM:", "NCBITaxon:", "NCBIGene:"])}
         
         if constructed_failures:
-            logger.info(f"\nConstructed CURIE failures: {len(constructed_failures):,}")
-            for curie, pmids in list(constructed_failures.items())[:10]:
-                logger.info(f"  {curie}: {len(pmids)} PMIDs")
-    
-    def write_jsonlines(self, data: List[Dict], filename: str):
-        """Write data to JSONLINES format."""
-        output_path = self.output_dir / filename
-        logger.info(f"Writing {len(data)} records to {output_path}")
-        
-        with open(output_path, 'w') as f:
-            for item in data:
-                f.write(json.dumps(item) + '\n')
-                
-        logger.info(f"Successfully wrote {output_path}")
+            logger.info(f"Constructed CURIE failures: {len(constructed_failures):,}")
     
     def write_failed_normalizations(self, filename: str):
         """Write failed normalization data to simple text format."""
-        output_path = self.output_dir / filename.replace('.jsonl', '.txt')
-        failed_normalizations = self.normalizer.get_failed_normalizations()
-        failed_data = convert_failed_to_output_format(failed_normalizations)
+        output_path = self.output_dir / filename
+        failed_normalizations_dict = self.normalizer.get_failed_normalizations_dict()
         
-        logger.info(f"Writing {len(failed_data)} failed normalization records to {output_path}")
-        
-        with open(output_path, 'w') as f:
-            for curie in failed_data:
-                f.write(curie + '\n')
-                
-        logger.info(f"Successfully wrote {output_path}")
+        if failed_normalizations_dict:
+            logger.info(f"Writing {len(failed_normalizations_dict)} failed normalizations")
+            with open(output_path, 'w') as f:
+                for curie in sorted(failed_normalizations_dict.keys()):
+                    f.write(curie + '\n')
+        else:
+            logger.info("No normalization failures to write")
     
     def write_statistics_report(self, filename: str):
         """Write detailed statistics and analysis to a report file."""
         output_path = self.output_dir / filename
         
+        # Calculate total unique CURIEs processed
+        total_unique_curies = sum(self.concept_id_stats.values()) - sum(self.invalid_concept_ids.values())
+        
         report = {
-            "total_unique_curies": len(self.curie_to_pmids),
+            "total_unique_curies": total_unique_curies,
             "entity_type_distribution": dict(self.type_stats),
             "curie_construction_patterns": dict(self.constructed_curies),
             "invalid_concept_ids": dict(self.invalid_concept_ids),
@@ -260,7 +328,7 @@ class PubTatorCleaner:
         }
         
         # Add normalization failure analysis
-        failed_normalizations = self.normalizer.get_failed_normalizations()
+        failed_normalizations = self.normalizer.get_failed_normalizations_dict()
         if failed_normalizations:
             failure_patterns = defaultdict(int)
             for failed_curie in failed_normalizations.keys():
@@ -278,50 +346,40 @@ class PubTatorCleaner:
         with open(output_path, 'w') as f:
             json.dump(report, f, indent=2)
             
-        logger.info(f"Successfully wrote statistics report to {output_path}")
+        logger.info("Statistics report written")
     
     def clean(self):
-        """Run the complete cleaning pipeline."""
-        logger.info("Starting PubTator data cleaning pipeline")
+        """Run memory-efficient chunked cleaning pipeline."""
+        logger.info("Starting PubTator cleaning pipeline")
         
-        # Step 1: Process file and extract data
-        curie_to_pmids = self.process_file_streaming()
-        
-        if not curie_to_pmids:
-            logger.error("No data extracted from file")
+        # Pass 1: Build normalization mapping
+        normalization_mapping = self.build_complete_normalization_mapping()
+        if not normalization_mapping:
+            logger.error("No CURIEs normalized successfully")
             return
         
-        # Step 2: Log processing statistics
+        # Log processing statistics
         self.log_statistics()
         
-        # Step 3: Normalize CURIEs
-        logger.info("Starting CURIE normalization...")
-        normalized_mapping = self.normalizer.normalize_all_curies(curie_to_pmids)
+        # Pass 2: Process and write records
+        records_written = self.process_file_streaming_chunked(normalization_mapping)
         
-        # Step 4: Analyze normalization failures
+        # Analyze and write outputs
         self.analyze_normalization_failures()
-        
-        # Step 5: Merge data based on normalized CURIEs
-        merged_data, original_curies_by_normalized = merge_normalized_data(curie_to_pmids, normalized_mapping)
-        
-        # Step 6: Convert to output format
-        output_data = convert_to_output_format(merged_data, original_curies_by_normalized)
-        
-        # Step 7: Write outputs
-        self.write_jsonlines(output_data, "pubtator_cleaned.jsonl")
         self.write_failed_normalizations("pubtator_failed_normalizations.jsonl")
         self.write_statistics_report("pubtator_processing_report.json")
         
-        # Step 8: Write biolink classes
+        # Write biolink classes if available
         biolink_classes = self.normalizer.get_biolink_classes()
         if biolink_classes:
             biolink_classes_path = self.output_dir / "pubtator_biolink_classes.json"
             write_biolink_classes(biolink_classes, str(biolink_classes_path))
         
-        logger.info("PubTator data cleaning pipeline completed successfully")
-        logger.info(f"Total records processed: {len(curie_to_pmids):,}")
-        logger.info(f"Successfully normalized records: {len(output_data):,}")
-        logger.info(f"Failed normalization records: {len(self.normalizer.get_failed_normalizations()):,}")
+        logger.info("Pipeline completed successfully")
+        logger.info(f"Records written: {records_written:,}")
+        failed_count = len(self.normalizer.get_failed_normalizations())
+        if failed_count > 0:
+            logger.info(f"Failed normalizations: {failed_count:,}")
 
 
 def main():
