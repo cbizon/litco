@@ -18,13 +18,21 @@ We have a number of tools and data sets looking at the existence of biomedical e
 # Install dependencies
 uv sync
 
-# Run cleaners (memory-efficient chunked processing)
+# PubTator Pipeline (two-step process)
+# Step 1: Convert PubTator TSV to NGD-compatible SQLite format
+uv run python src/pubtator_to_sqlite.py input/pubtator/bioconcepts2pubtator3.gz input/pubtator/pubtator_curie_to_pmids.sqlite
+# Step 2: Clean the SQLite database using shared logic
+uv run python src/clean_pubtator.py
+
+# NGD Pipeline (single step - uses shared SQLite cleaner)
 uv run python src/clean_ngd.py
-uv run python src/clean_pubtator.py  
+
+# OmniCorp Pipeline (single step)
 uv run python src/clean_omnicorp.py
 
-# Monitor NGD processing progress
+# Monitor processing progress
 python src/monitor_ngd.py
+python src/monitor_pubtator.py
 
 # Convert cleaned JSONL back to SQLite format
 uv run python src/jsonl_to_sqlite.py cleaned/ngd/ngd_cleaned.jsonl cleaned/ngd/ngd_cleaned.sqlite
@@ -61,8 +69,10 @@ litco/
 │   └── pubtator/
 ├── src/                      # Source code
 │   ├── normalization.py     # Shared CURIE normalization utilities
-│   ├── clean_ngd.py        # NGD data cleaning pipeline (memory-efficient chunked processing)
-│   ├── clean_pubtator.py   # PubTator data cleaning pipeline
+│   ├── sqlite_cleaner.py    # Shared SQLite cleaning logic (two-pass normalization)
+│   ├── pubtator_to_sqlite.py # Convert PubTator TSV to SQLite format (sort-based)
+│   ├── clean_ngd.py        # NGD data cleaning wrapper (uses sqlite_cleaner)
+│   ├── clean_pubtator.py   # PubTator data cleaning wrapper (uses sqlite_cleaner)
 │   ├── clean_omnicorp.py   # OmniCorp data cleaning pipeline
 │   ├── monitor_ngd.py      # NGD processing progress monitor
 │   └── jsonl_to_sqlite.py  # Convert JSONL output back to SQLite format
@@ -115,15 +125,18 @@ The entity files contain five columns:
 
 ## Implementation
 
-### Memory-Efficient Processing (NGD)
+### Memory-Efficient Processing 
 
-The NGD cleaner uses a memory-efficient chunked processing approach to handle large datasets (2.1M+ CURIEs):
+The new architecture uses shared components for consistent, memory-efficient processing:
 
 1. **Two-Pass Architecture**: 
    - Pass 1: Extract all CURIEs and build complete normalization mapping
    - Pass 2: Process data in chunks, writing complete records immediately
-2. **Chunked Data Extraction**: SQL-based chunking using LIMIT/OFFSET
-3. **Streaming Output**: Write normalized records as soon as all original CURIEs for a normalized CURIE are encountered
+2. **PubTator Two-Step Pipeline**:
+   - Step 1 (`pubtator_to_sqlite.py`): Sort-based conversion of TSV to SQLite format
+   - Step 2 (`clean_pubtator.py`): Uses shared SQLite cleaner logic
+3. **NGD Single-Step Pipeline**:
+   - Uses shared SQLite cleaner logic directly on existing SQLite format
 4. **Memory Bounded**: Memory usage stays constant regardless of dataset size
 
 ### Normalization Pipeline
@@ -143,13 +156,20 @@ All three data sources are processed through a common normalization pipeline imp
 - `merge_normalized_data()`: Merges PMID sets when CURIEs collapse to same concept
 - `convert_to_output_format()`: Standardizes output to JSONL with 'publications' key
 
+#### `sqlite_cleaner.py` 
+- `SQLiteCleaner`: Shared class for processing SQLite curie_to_pmids databases
+- `clean_sqlite_curie_to_pmids()`: Generic function used by both NGD and PubTator cleaners
+- Memory-efficient chunked processing with two-pass normalization architecture
+
 #### Data Cleaners
-- `clean_ngd.py`: Memory-efficient chunked processing of SQLite database with two-pass architecture
-- `clean_pubtator.py`: Streams through gzipped file, infers CURIE prefixes from entity types
-- `clean_omnicorp.py`: Processes TSV files, converts IRIs to CURIEs
+- `pubtator_to_sqlite.py`: Converts PubTator TSV format to NGD-compatible SQLite using sort-based aggregation
+- `clean_ngd.py`: Thin wrapper around shared SQLite cleaner for NGD data
+- `clean_pubtator.py`: Thin wrapper around shared SQLite cleaner for PubTator data (requires conversion first)
+- `clean_omnicorp.py`: Processes TSV files, converts IRIs to CURIEs (different architecture)
 
 #### Utility Scripts
 - `monitor_ngd.py`: Real-time monitoring of NGD processing progress
+- `monitor_pubtator.py`: Real-time monitoring of PubTator processing progress
 - `jsonl_to_sqlite.py`: Convert cleaned JSONL output back to SQLite format (same schema as input)
 
 #### Output Format
