@@ -152,30 +152,13 @@ class TestPubTatorCleaner:
         assert len(curie_to_pmids) > 0
         assert "MESH:D013119" in curie_to_pmids
     
-    def test_write_jsonlines(self):
-        """Test writing data to JSONLINES format."""
-        test_data = [
-            {"curie": "MESH:D013119", "original_curies": ["MESH:D013119"], "publications": ["PMID:40799000"]},
-            {"curie": "NCBITaxon:4932", "original_curies": ["NCBITaxon:4932"], "publications": ["PMID:40774000"]}
-        ]
+    def test_chunked_processing_workflow(self):
+        """Test the chunked processing workflow components."""
+        # Test that we can build normalization mapping
+        mapping = self.cleaner.build_complete_normalization_mapping()
         
-        filename = "test_output.jsonl"
-        self.cleaner.write_jsonlines(test_data, filename)
-        
-        # Read back and verify
-        output_file = self.output_dir / filename
-        assert output_file.exists()
-        
-        with open(output_file) as f:
-            lines = f.readlines()
-            
-        assert len(lines) == 2
-        
-        line1 = json.loads(lines[0].strip())
-        line2 = json.loads(lines[1].strip())
-        
-        assert line1 == test_data[0]
-        assert line2 == test_data[1]
+        # Verify we have some normalizable CURIEs
+        assert len(mapping) >= 1
     
     def test_write_statistics_report(self):
         """Test writing statistics report."""

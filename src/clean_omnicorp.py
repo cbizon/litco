@@ -146,15 +146,17 @@ class OmniCorpCleaner:
     
     def write_failed_normalizations(self, filename: str):
         """Write failed normalization data to simple text format."""
-        output_path = self.output_dir / filename.replace('.jsonl', '.txt')
-        failed_normalizations = self.normalizer.get_failed_normalizations()
-        failed_data = convert_failed_to_output_format(failed_normalizations)
+        output_path = self.output_dir / filename
+        failed_normalizations_dict = self.normalizer.get_failed_normalizations_dict()
         
-        logger.info(f"Writing {len(failed_data)} failed normalization records to {output_path}")
-        
-        with open(output_path, 'w') as f:
-            for curie in failed_data:
-                f.write(curie + '\n')
+        if failed_normalizations_dict:
+            logger.info(f"Writing {len(failed_normalizations_dict)} failed normalization records to {output_path}")
+            # Write simple text format with just the CURIEs
+            with open(output_path, 'w') as f:
+                for curie in sorted(failed_normalizations_dict.keys()):
+                    f.write(curie + '\n')
+        else:
+            logger.info("No failed normalizations to write")
                 
         logger.info(f"Successfully wrote {output_path}")
     

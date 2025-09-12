@@ -146,6 +146,10 @@ class CurieNormalizer:
         """Get list of CURIEs that failed to normalize."""
         return list(self.failed_normalizations.keys())
     
+    def get_failed_normalizations_dict(self) -> Dict[str, List[int]]:
+        """Get full dictionary of failed normalizations with PMIDs."""
+        return self.failed_normalizations.copy()
+    
     def clear_failed_normalizations(self):
         """Clear the failed normalizations tracker."""
         self.failed_normalizations.clear()
@@ -167,10 +171,14 @@ def merge_normalized_data(curie_to_pmids: Dict[str, List[int]],
     merged_data = defaultdict(set)
     original_curies_by_normalized = defaultdict(list)
     
+    # Only process CURIEs that were successfully normalized
     for original_curie, pmids in curie_to_pmids.items():
-        normalized_curie = normalized_mapping[original_curie]
-        merged_data[normalized_curie].update(pmids)
-        original_curies_by_normalized[normalized_curie].append(original_curie)
+        if original_curie in normalized_mapping:
+            normalized_curie = normalized_mapping[original_curie]
+            merged_data[normalized_curie].update(pmids)
+            original_curies_by_normalized[normalized_curie].append(original_curie)
+        else:
+            logger.debug(f"Skipping {original_curie} - not in normalized mapping (failed normalization)")
         
     logger.info(f"Merged to {len(merged_data)} unique normalized CURIEs")
     return dict(merged_data), dict(original_curies_by_normalized)
@@ -197,14 +205,23 @@ def convert_to_output_format(merged_data: Dict[str, set],
     return output_data
 
 
-def convert_failed_to_output_format(failed_normalizations: List[str]) -> List[str]:
-    """Convert failed normalizations to simple list format."""
+def convert_failed_to_output_format(failed_normalizations: Dict[str, List[int]]) -> List[Dict]:
+    """Convert failed normalizations to structured output format."""
     logger.info(f"Converting {len(failed_normalizations)} failed normalizations to output format")
     
-    # Sort for consistency
-    sorted_failures = sorted(failed_normalizations)
-    logger.info(f"Created {len(sorted_failures)} failed normalization records")
-    return sorted_failures
+    output_data = []
+    for curie, pmids in failed_normalizations.items():
+        # Convert PMIDs to PMID:XXXXX format and sort for consistency
+        pmid_curies = [f"PMID:{pmid}" for pmid in sorted(pmids)]
+        output_data.append({
+            "curie": curie,
+            "publications": pmid_curies
+        })
+        
+    # Sort by curie for consistency
+    output_data.sort(key=lambda x: x["curie"])
+    logger.info(f"Created {len(output_data)} failed normalization records")
+    return output_data
 
 
 def write_biolink_classes(biolink_classes: Dict[str, List[str]], output_path: str):
