@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Tests for OmniCorp data cleaning functionality."""
+"""Tests for OmniCorp data cleaning functionality using shared sqlite_cleaner."""
 
 import pytest
+import sqlite3
 import json
 import tempfile
 import shutil
 from pathlib import Path
+from unittest.mock import patch, Mock
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-from clean_omnicorp import OmniCorpCleaner
+import clean_omnicorp
+from sqlite_cleaner import clean_sqlite_curie_to_pmids
 
 
-class TestOmniCorpCleaner:
-    """Test class for OmniCorp data cleaning."""
+class TestOmniCorpCleaningIntegration:
+    """Integration tests for OmniCorp cleaning using shared module."""
     
     def setup_method(self):
         """Set up test fixtures."""
@@ -25,203 +28,153 @@ class TestOmniCorpCleaner:
         self.input_dir.mkdir(parents=True)
         self.output_dir.mkdir(parents=True)
         
-        # Create test TSV files
-        self.create_test_files()
-        
-        # Initialize cleaner
-        self.cleaner = OmniCorpCleaner(str(self.input_dir), str(self.output_dir))
+        # Create test database
+        self.test_db_path = self.input_dir / "test.sqlite"
+        self.create_test_database()
         
     def teardown_method(self):
         """Clean up test fixtures."""
-        shutil.rmtree(self.temp_dir)
+        if Path(self.temp_dir).exists():
+            shutil.rmtree(self.temp_dir)
         
-    def create_test_files(self):
-        """Create test TSV files with sample data."""
-        # Test file 1
-        test_file1 = self.input_dir / "test1.tsv"
-        with open(test_file1, 'w') as f:
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/4307\thttp://purl.obolibrary.org/obo/CHEBI_17822\n")
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/4307\thttp://id.nlm.nih.gov/mesh/D014346\n")
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/5555\thttp://purl.obolibrary.org/obo/CHEBI_17822\n")
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/6666\thttp://purl.obolibrary.org/obo/RO_0002432\n")
+    def create_test_database(self):
+        """Create a test SQLite database with OmniCorp data in NGD format."""
+        conn = sqlite3.connect(self.test_db_path)
+        cursor = conn.cursor()
         
-        # Test file 2  
-        test_file2 = self.input_dir / "test2.tsv"
-        with open(test_file2, 'w') as f:
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/7777\thttp://purl.obolibrary.org/obo/CHEBI_17822\n")
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/8888\thttp://purl.obolibrary.org/obo/PATO_0000033\n")
-            
-    def test_extract_pmid_from_url(self):
-        """Test extracting PMID from PubMed URLs."""
-        url = "https://www.ncbi.nlm.nih.gov/pubmed/4307"
-        pmid = self.cleaner.extract_pmid_from_url(url)
-        assert pmid == 4307
+        # Create table with NGD schema
+        cursor.execute("CREATE TABLE curie_to_pmids (curie TEXT, pmids TEXT)")
+        cursor.execute("CREATE UNIQUE INDEX unique_curie ON curie_to_pmids (curie)")
         
-        # Test with different PMID
-        url2 = "https://www.ncbi.nlm.nih.gov/pubmed/12345678" 
-        pmid2 = self.cleaner.extract_pmid_from_url(url2)
-        assert pmid2 == 12345678
-        
-        # Test invalid URL
-        with pytest.raises(ValueError):
-            self.cleaner.extract_pmid_from_url("https://invalid.com/notpmid")
-            
-    def test_convert_iri_to_curie(self):
-        """Test converting IRIs to CURIEs."""
-        # CHEBI
-        iri = "http://purl.obolibrary.org/obo/CHEBI_17822"
-        curie = self.cleaner.convert_iri_to_curie(iri)
-        assert curie == "CHEBI:17822"
-        
-        # MESH
-        iri = "http://id.nlm.nih.gov/mesh/D014346"
-        curie = self.cleaner.convert_iri_to_curie(iri)
-        assert curie == "MESH:D014346"
-        
-        # Other OBO (RO)
-        iri = "http://purl.obolibrary.org/obo/RO_0002432"
-        curie = self.cleaner.convert_iri_to_curie(iri)
-        assert curie == "RO:0002432"
-        
-        # Other OBO (PATO)
-        iri = "http://purl.obolibrary.org/obo/PATO_0000033"
-        curie = self.cleaner.convert_iri_to_curie(iri)
-        assert curie == "PATO:0000033"
-        
-        # Unknown IRI (should return as-is with warning)
-        iri = "http://unknown.example.com/entity/123"
-        curie = self.cleaner.convert_iri_to_curie(iri)
-        assert curie == iri
-        
-    def test_process_tsv_file(self):
-        """Test processing a single TSV file."""
-        test_file = self.input_dir / "test1.tsv"
-        self.cleaner.process_tsv_file(test_file)
-        
-        # Check that data was extracted correctly
-        assert "CHEBI:17822" in self.cleaner.curie_to_pmids
-        assert "MESH:D014346" in self.cleaner.curie_to_pmids
-        assert "RO:0002432" in self.cleaner.curie_to_pmids
-        
-        # Check PMIDs
-        assert 4307 in self.cleaner.curie_to_pmids["CHEBI:17822"]
-        assert 5555 in self.cleaner.curie_to_pmids["CHEBI:17822"]
-        assert 4307 in self.cleaner.curie_to_pmids["MESH:D014346"]
-        assert 6666 in self.cleaner.curie_to_pmids["RO:0002432"]
-        
-    def test_process_all_files(self):
-        """Test processing all TSV files."""
-        curie_to_pmids = self.cleaner.process_all_files()
-        
-        # Should have processed both files
-        assert len(curie_to_pmids) == 4  # CHEBI:17822, MESH:D014346, RO:0002432, PATO:0000033
-        
-        # Check CHEBI:17822 appears in both files
-        assert set(curie_to_pmids["CHEBI:17822"]) == {4307, 5555, 7777}
-        
-        # Check other CURIEs
-        assert curie_to_pmids["MESH:D014346"] == [4307]
-        assert curie_to_pmids["RO:0002432"] == [6666] 
-        assert curie_to_pmids["PATO:0000033"] == [8888]
-        
-    def test_process_malformed_lines(self):
-        """Test handling of malformed lines."""
-        # Create file with malformed data
-        test_file = self.input_dir / "malformed.tsv"
-        with open(test_file, 'w') as f:
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/4307\thttp://purl.obolibrary.org/obo/CHEBI_17822\n")  # Good line
-            f.write("malformed line with no tab\n")  # Bad line
-            f.write("too\tmany\ttabs\there\n")  # Too many tabs
-            f.write("https://invalid.url/notpmid\thttp://purl.obolibrary.org/obo/CHEBI_99999\n")  # Bad URL
-            f.write("\n")  # Empty line
-            f.write("https://www.ncbi.nlm.nih.gov/pubmed/9999\thttp://purl.obolibrary.org/obo/CHEBI_55555\n")  # Good line
-        
-        self.cleaner.process_tsv_file(test_file)
-        
-        # Should have extracted only the good lines
-        assert len(self.cleaner.curie_to_pmids) == 2
-        assert "CHEBI:17822" in self.cleaner.curie_to_pmids
-        assert "CHEBI:55555" in self.cleaner.curie_to_pmids
-        
-    def test_write_jsonlines(self):
-        """Test writing data to JSONLINES format."""
+        # Insert test data that would come from omnicorp_to_sqlite.py
         test_data = [
-            {"curie": "CHEBI:17822", "publications": ["PMID:4307", "PMID:5555"]},
-            {"curie": "MESH:D014346", "publications": ["PMID:4307"]}
+            ("CHEBI:15377", "[12345, 67890]"),  # Water (from IRI conversion)
+            ("MESH:D014867", "[11111]"),  # Also water (will merge if same concept)
+            ("HP:0000001", "[33333, 44444]"),  # Phenotype
+            ("RO:0002432", "[55555]"),  # Relation
         ]
         
-        filename = "test_output.jsonl"
-        self.cleaner.write_jsonlines(test_data, filename)
+        cursor.executemany("INSERT INTO curie_to_pmids (curie, pmids) VALUES (?, ?)", test_data)
+        conn.commit()
+        conn.close()
+    
+    @patch('sqlite_cleaner.CurieNormalizer')
+    def test_omnicorp_main_function(self, mock_normalizer_class):
+        """Test the OmniCorp main function integration."""
+        # Setup mock
+        mock_normalizer = Mock()
+        mock_normalizer.normalize_all_curies.return_value = {
+            "CHEBI:15377": "CHEBI:15377",  # Water
+            "MESH:D014867": "CHEBI:15377",  # Same water concept (will merge)
+            "HP:0000001": "HP:0000001",   # Phenotype
+            "RO:0002432": "RO:0002432"    # Relation
+        }
+        mock_normalizer.get_failed_normalizations_dict.return_value = {}
+        mock_normalizer.get_failed_normalizations.return_value = []
+        mock_normalizer.get_biolink_classes.return_value = {
+            "CHEBI:15377": ["biolink:SmallMolecule"],
+            "HP:0000001": ["biolink:PhenotypicFeature"],
+            "RO:0002432": ["biolink:Relation"]
+        }
+        mock_normalizer_class.return_value = mock_normalizer
         
-        # Read back and verify
-        output_file = self.output_dir / filename
-        assert output_file.exists()
+        # Test the function interface directly
+        records_written = clean_sqlite_curie_to_pmids(
+            input_sqlite_path=str(self.test_db_path),
+            output_dir=str(self.output_dir),
+            dataset_name="omnicorp"
+        )
         
-        with open(output_file) as f:
-            lines = f.readlines()
-            
-        assert len(lines) == 2
+        # Should write 3 records (merged water + phenotype + relation)
+        assert records_written == 3
         
-        line1 = json.loads(lines[0].strip())
-        line2 = json.loads(lines[1].strip())
-        
-        assert line1 == test_data[0]
-        assert line2 == test_data[1]
-        
-    def test_full_pipeline_integration(self):
-        """Test the complete cleaning pipeline with real API calls."""
-        # Run the pipeline on our small test dataset
-        self.cleaner.clean()
-        
-        # Verify output file was created
+        # Check output files
         output_file = self.output_dir / "omnicorp_cleaned.jsonl"
         assert output_file.exists()
         
-        # Read and verify output
-        with open(output_file) as f:
-            lines = [json.loads(line.strip()) for line in f]
+        # Verify output content
+        with open(output_file, 'r') as f:
+            lines = f.readlines()
+            assert len(lines) == 3
             
-        # Should have entries for our test CURIEs (some may be merged during normalization)
-        assert len(lines) >= 1
-        
-        # Verify structure of output
-        for item in lines:
-            assert "curie" in item
-            assert "publications" in item
-            assert "original_curies" in item
-            assert isinstance(item["publications"], list)
-            assert isinstance(item["original_curies"], list)
+            records = [json.loads(line) for line in lines]
+            records_by_curie = {r["curie"]: r for r in records}
             
-            # Verify PMID format
-            for pub in item["publications"]:
-                assert pub.startswith("PMID:")
-                
-        # Print results for inspection
-        print(f"Pipeline produced {len(lines)} normalized entries")
-        for item in lines:
-            print(f"  {item['curie']}: {len(item['publications'])} publications, original: {item['original_curies']}")
+            # Check merged water record
+            water_record = records_by_curie["CHEBI:15377"]
+            assert set(water_record["original_curies"]) == {"CHEBI:15377", "MESH:D014867"}
+            # All PMIDs from both sources should be merged
+            expected_pmids = {"PMID:12345", "PMID:67890", "PMID:11111"}
+            assert set(water_record["publications"]) == expected_pmids
             
-    def test_empty_directory(self):
-        """Test handling of empty input directory."""
-        # Create empty directory
-        empty_dir = Path(self.temp_dir) / "empty"
-        empty_dir.mkdir()
-        
-        cleaner = OmniCorpCleaner(str(empty_dir), str(self.output_dir))
-        curie_to_pmids = cleaner.process_all_files()
-        
-        assert curie_to_pmids is None
-        
-    def test_no_tsv_files(self):
-        """Test handling when no .tsv files are found."""
-        # Create directory with non-TSV files
-        non_tsv_dir = Path(self.temp_dir) / "no_tsv"
-        non_tsv_dir.mkdir()
-        
-        with open(non_tsv_dir / "test.txt", 'w') as f:
-            f.write("not a tsv file")
+            # Check phenotype record
+            phenotype_record = records_by_curie["HP:0000001"]
+            assert phenotype_record["original_curies"] == ["HP:0000001"]
+            assert set(phenotype_record["publications"]) == {"PMID:33333", "PMID:44444"}
             
-        cleaner = OmniCorpCleaner(str(non_tsv_dir), str(self.output_dir))
-        curie_to_pmids = cleaner.process_all_files()
+            # Check relation record
+            relation_record = records_by_curie["RO:0002432"]
+            assert relation_record["original_curies"] == ["RO:0002432"]
+            assert relation_record["publications"] == ["PMID:55555"]
+    
+    @patch('sqlite_cleaner.CurieNormalizer')
+    @patch('clean_omnicorp.logger')
+    def test_omnicorp_main_script_integration(self, mock_logger, mock_normalizer_class):
+        """Test running the OmniCorp main script with mocked paths."""
+        # Setup mock
+        mock_normalizer = Mock()
+        mock_normalizer.normalize_all_curies.return_value = {"CHEBI:15377": "CHEBI:15377"}
+        mock_normalizer.get_failed_normalizations_dict.return_value = {}
+        mock_normalizer.get_failed_normalizations.return_value = []
+        mock_normalizer.get_biolink_classes.return_value = {"CHEBI:15377": ["biolink:SmallMolecule"]}
+        mock_normalizer_class.return_value = mock_normalizer
         
-        assert curie_to_pmids is None
+        # Test the main function with mocked paths
+        with patch('clean_omnicorp.clean_sqlite_curie_to_pmids') as mock_clean_func:
+            mock_clean_func.return_value = 1
+            
+            clean_omnicorp.main()
+            
+            # Verify the function was called with expected parameters
+            mock_clean_func.assert_called_once()
+            call_args = mock_clean_func.call_args
+            assert "omnicorp" in call_args.kwargs['dataset_name']
+            assert "input/omnicorp/" in call_args.kwargs['input_sqlite_path']
+            assert "cleaned/omnicorp" in call_args.kwargs['output_dir']
+    
+    @patch('sqlite_cleaner.CurieNormalizer')
+    def test_typical_omnicorp_data_patterns(self, mock_normalizer_class):
+        """Test with data patterns typical of OmniCorp after conversion."""
+        # Setup mock for typical OmniCorp entity types
+        mock_normalizer = Mock()
+        mock_normalizer.normalize_all_curies.return_value = {
+            "CHEBI:15377": "CHEBI:15377",  # Small molecule
+            "HP:0000001": "HP:0000001",    # Phenotype
+            "RO:0002432": "RO:0002432",    # Relation
+        }
+        mock_normalizer.get_failed_normalizations_dict.return_value = {}
+        mock_normalizer.get_failed_normalizations.return_value = []
+        mock_normalizer.get_biolink_classes.return_value = {
+            "CHEBI:15377": ["biolink:SmallMolecule"],
+            "HP:0000001": ["biolink:PhenotypicFeature"], 
+            "RO:0002432": ["biolink:Relation"]
+        }
+        mock_normalizer_class.return_value = mock_normalizer
+        
+        records_written = clean_sqlite_curie_to_pmids(
+            input_sqlite_path=str(self.test_db_path),
+            output_dir=str(self.output_dir),
+            dataset_name="omnicorp"
+        )
+        
+        assert records_written == 3
+        
+        # Check that biolink classes are written correctly
+        biolink_file = self.output_dir / "omnicorp_biolink_classes.json"
+        assert biolink_file.exists()
+        
+        with open(biolink_file, 'r') as f:
+            biolink_data = json.load(f)
+            assert "CHEBI:15377" in biolink_data['curie_to_classes']
+            assert "HP:0000001" in biolink_data['curie_to_classes']
+            assert "RO:0002432" in biolink_data['curie_to_classes']
