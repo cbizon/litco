@@ -18,16 +18,20 @@ We have a number of tools and data sets looking at the existence of biomedical e
 # Install dependencies
 uv sync
 
-# PubTator Pipeline (two-step process)
-# Step 1: Convert PubTator TSV to NGD-compatible SQLite format
-uv run python src/pubtator_to_sqlite.py input/pubtator/bioconcepts2pubtator3.gz input/pubtator/pubtator_curie_to_pmids.sqlite
-# Step 2: Clean the SQLite database using shared logic
-uv run python src/clean_pubtator.py
+# Two-Phase Processing Pipeline
 
-# NGD Pipeline (single step - uses shared SQLite cleaner)
+# Phase 1: Convert source formats to NGD-compatible SQLite
+# PubTator: Convert gzipped TSV to SQLite (handles semicolon-delimited concept IDs)
+uv run python src/pubtator_to_sqlite.py input/pubtator/bioconcepts2pubtator3.gz input/pubtator/pubtator_raw.sqlite
+
+# OmniCorp: Convert TSV files to SQLite (optimized per-file sorting + merge)
+uv run python src/omnicorp_to_sqlite.py input/omnicorp/ input/omnicorp/omnicorp_raw.sqlite
+
+# NGD: Already in SQLite format, no conversion needed
+
+# Phase 2: Normalize and clean using shared pipeline (memory-efficient chunked processing)
 uv run python src/clean_ngd.py
-
-# OmniCorp Pipeline (single step)
+uv run python src/clean_pubtator.py  
 uv run python src/clean_omnicorp.py
 
 # Monitor processing progress
@@ -71,9 +75,10 @@ litco/
 │   ├── normalization.py     # Shared CURIE normalization utilities
 │   ├── sqlite_cleaner.py    # Shared SQLite cleaning logic (two-pass normalization)
 │   ├── pubtator_to_sqlite.py # Convert PubTator TSV to SQLite format (sort-based)
+│   ├── omnicorp_to_sqlite.py # Convert OmniCorp TSV files to SQLite format (sort-based)
 │   ├── clean_ngd.py        # NGD data cleaning wrapper (uses sqlite_cleaner)
 │   ├── clean_pubtator.py   # PubTator data cleaning wrapper (uses sqlite_cleaner)
-│   ├── clean_omnicorp.py   # OmniCorp data cleaning pipeline
+│   ├── clean_omnicorp.py   # OmniCorp data cleaning wrapper (uses sqlite_cleaner)
 │   ├── monitor_ngd.py      # NGD processing progress monitor
 │   └── jsonl_to_sqlite.py  # Convert JSONL output back to SQLite format
 └── tests/                   # Test suite
@@ -135,9 +140,12 @@ The new architecture uses shared components for consistent, memory-efficient pro
 2. **PubTator Two-Step Pipeline**:
    - Step 1 (`pubtator_to_sqlite.py`): Sort-based conversion of TSV to SQLite format
    - Step 2 (`clean_pubtator.py`): Uses shared SQLite cleaner logic
-3. **NGD Single-Step Pipeline**:
+3. **OmniCorp Two-Step Pipeline**:
+   - Step 1 (`omnicorp_to_sqlite.py`): Sort-based conversion of TSV files to SQLite format
+   - Step 2 (`clean_omnicorp.py`): Uses shared SQLite cleaner logic
+4. **NGD Single-Step Pipeline**:
    - Uses shared SQLite cleaner logic directly on existing SQLite format
-4. **Memory Bounded**: Memory usage stays constant regardless of dataset size
+5. **Memory Bounded**: Memory usage stays constant regardless of dataset size
 
 ### Normalization Pipeline
 
@@ -158,14 +166,15 @@ All three data sources are processed through a common normalization pipeline imp
 
 #### `sqlite_cleaner.py` 
 - `SQLiteCleaner`: Shared class for processing SQLite curie_to_pmids databases
-- `clean_sqlite_curie_to_pmids()`: Generic function used by both NGD and PubTator cleaners
+- `clean_sqlite_curie_to_pmids()`: Generic function used by NGD, PubTator, and OmniCorp cleaners
 - Memory-efficient chunked processing with two-pass normalization architecture
 
 #### Data Cleaners
 - `pubtator_to_sqlite.py`: Converts PubTator TSV format to NGD-compatible SQLite using sort-based aggregation
+- `omnicorp_to_sqlite.py`: Converts OmniCorp TSV files to NGD-compatible SQLite using sort-based aggregation
 - `clean_ngd.py`: Thin wrapper around shared SQLite cleaner for NGD data
 - `clean_pubtator.py`: Thin wrapper around shared SQLite cleaner for PubTator data (requires conversion first)
-- `clean_omnicorp.py`: Processes TSV files, converts IRIs to CURIEs (different architecture)
+- `clean_omnicorp.py`: Thin wrapper around shared SQLite cleaner for OmniCorp data (requires conversion first)
 
 #### Utility Scripts
 - `monitor_ngd.py`: Real-time monitoring of NGD processing progress

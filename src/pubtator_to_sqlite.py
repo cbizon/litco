@@ -38,6 +38,9 @@ class PubTatorToSQLiteConverter:
             'invalid_concept_ids': 0,
             'curie_constructions': defaultdict(int)
         }
+        
+        # Track unknown patterns for analysis
+        self.unknown_patterns = set()
     
     def convert_concept_id_to_curie(self, concept_id: str, entity_type: str) -> Optional[str]:
         """Convert concept ID to proper CURIE format based on type context."""
@@ -67,10 +70,31 @@ class PubTatorToSQLiteConverter:
                 # Chemicals as numbers are tricky - treat as unknown for now
                 curie = f"UNKNOWN_CHEMICAL:{concept_id}"
                 self.stats['curie_constructions']['Chemical->UNKNOWN'] += 1
+                
+                # Track unknown pattern for analysis
+                self.unknown_patterns.add(f"UNKNOWN_CHEMICAL:{concept_id}")
+                
+                # Log first few examples
+                if self.stats['curie_constructions']['Chemical->UNKNOWN'] <= 10:
+                    logger.warning(f"UNKNOWN chemical number #{self.stats['curie_constructions']['Chemical->UNKNOWN']}: {concept_id} -> {curie}")
+                elif self.stats['curie_constructions']['Chemical->UNKNOWN'] == 11:
+                    logger.warning("... (suppressing further UNKNOWN chemical examples)")
+                    
                 return curie
             else:
                 curie = f"UNKNOWN_{entity_type.upper()}:{concept_id}"
                 self.stats['curie_constructions'][f'{entity_type}->UNKNOWN'] += 1
+                
+                # Track unknown pattern for analysis
+                self.unknown_patterns.add(f"UNKNOWN_{entity_type.upper()}:{concept_id}")
+                
+                # Log first few examples of each unknown entity type
+                unknown_key = f'{entity_type}->UNKNOWN'
+                if self.stats['curie_constructions'][unknown_key] <= 5:
+                    logger.warning(f"UNKNOWN entity type #{self.stats['curie_constructions'][unknown_key]}: {entity_type}:{concept_id} -> {curie}")
+                elif self.stats['curie_constructions'][unknown_key] == 6:
+                    logger.warning(f"... (suppressing further UNKNOWN {entity_type} examples)")
+                    
                 return curie
         
         # Handle CVCL cell line format (these are Cellosaurus identifiers)
@@ -82,6 +106,10 @@ class PubTatorToSQLiteConverter:
         
         # Other formats - return as-is
         self.stats['curie_constructions'][f'{entity_type}->OTHER'] += 1
+        
+        # Track unknown pattern for analysis
+        self.unknown_patterns.add(f"OTHER_{entity_type.upper()}:{concept_id}")
+        
         return concept_id
     
     def pass1_extract_and_sort(self) -> Path:
@@ -117,15 +145,22 @@ class PubTatorToSQLiteConverter:
                     except ValueError:
                         continue
                     
-                    # Convert to CURIE
-                    curie = self.convert_concept_id_to_curie(concept_id, entity_type)
-                    if curie is None:
-                        self.stats['invalid_concept_ids'] += 1
-                        continue
-                    
-                    # Write CURIE-PMID pair to temp file
-                    temp_file.write(f"{curie}\t{pmid}\n")
-                    self.stats['valid_pairs'] += 1
+                    # Split semicolon-delimited concept IDs and process each individually
+                    concept_ids = concept_id.split(';')
+                    for individual_concept_id in concept_ids:
+                        individual_concept_id = individual_concept_id.strip()
+                        if not individual_concept_id:
+                            continue
+                            
+                        # Convert to CURIE
+                        curie = self.convert_concept_id_to_curie(individual_concept_id, entity_type)
+                        if curie is None:
+                            self.stats['invalid_concept_ids'] += 1
+                            continue
+                        
+                        # Write CURIE-PMID pair to temp file
+                        temp_file.write(f"{curie}\t{pmid}\n")
+                        self.stats['valid_pairs'] += 1
             
             temp_file.close()
             logger.info(f"Pass 1: {self.stats['lines_processed']:,} lines processed, {self.stats['valid_pairs']:,} valid pairs extracted")
@@ -164,7 +199,7 @@ class PubTatorToSQLiteConverter:
         
         # Create table with same schema as NGD
         cursor.execute('''
-            CREATE TABLE curie_to_pmids (
+            CREATE TABLE IF NOT EXISTS curie_to_pmids (
                 curie TEXT PRIMARY KEY,
                 pmids TEXT
             )
@@ -251,6 +286,9 @@ class PubTatorToSQLiteConverter:
         # Pass 1: Extract and sort
         sorted_file = self.pass1_extract_and_sort()
         
+        # Write unknown patterns after Pass 1 (before Pass 2 in case it fails)
+        self.write_unknown_patterns()
+        
         # Pass 2: Aggregate to SQLite
         self.pass2_aggregate_to_sqlite(sorted_file)
         
@@ -258,6 +296,20 @@ class PubTatorToSQLiteConverter:
         self.log_statistics()
         
         logger.info("Conversion completed successfully")
+    
+    def write_unknown_patterns(self):
+        """Write unknown concept ID patterns to file for analysis."""
+        if self.unknown_patterns:
+            output_dir = Path("cleaned/pubtator")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            unknown_file = output_dir / "pubtator_unknown_patterns.txt"
+            
+            logger.info(f"Writing {len(self.unknown_patterns)} unknown patterns to {unknown_file}")
+            with open(unknown_file, 'w') as f:
+                for pattern in sorted(self.unknown_patterns):
+                    f.write(pattern + '\n')
+        else:
+            logger.info("No unknown patterns to write")
 
 
 def main():

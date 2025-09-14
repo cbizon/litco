@@ -169,7 +169,7 @@ class SQLiteCleaner:
                             del progress_tracker[normalized_curie]  # Free memory
                             records_written += 1
                             
-                            if records_written % 10000 == 0:  # Log every 10K records
+                            if records_written % 1000000 == 0:  # Log every 1M records
                                 logger.info(f"Written {records_written:,} complete records")
         
         # Write failed normalizations
