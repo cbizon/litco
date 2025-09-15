@@ -202,6 +202,8 @@ Each component has comprehensive tests:
 
 ## ***RULES OF THE ROAD***
 
+- Don't use classes to group methods for no reason.
+
 - Don't use mocks. 
 
 - Ask clarifying questions
