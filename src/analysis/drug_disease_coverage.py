@@ -185,8 +185,8 @@ def main():
     
     # Define input files
     input_files = {
-        'indications': '../../Indications List.csv',
-        'contraindications': '../../Contraindications List.csv'
+        'indications': '../../input/medi/Indications List.csv',
+        'contraindications': '../../input/medi/Contraindications List.csv'
     }
     
     

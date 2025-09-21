@@ -24,7 +24,7 @@ uv run python identifier_overlap.py
 ### 2. **Drug-Disease Coverage Analysis** 
 **Script**: `drug_disease_coverage.py`
 **Purpose**: Analyzes coverage of drug-disease pairs from clinical indication and contraindication lists
-**Input**: `../../Indications List.csv`, `../../Contraindications List.csv`
+**Input**: `../../input/medi/Indications List.csv`, `../../input/medi/Contraindications List.csv`
 **Output**: `../../analysis_results/drug_disease_coverage/`
 
 ```bash

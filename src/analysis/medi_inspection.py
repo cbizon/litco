@@ -80,8 +80,8 @@ def load_medi_coverage(identifiers: Dict[str, Set[str]]) -> Tuple[Dict, Dict]:
     
     # Process the same files as drug_disease_coverage.py
     input_files = [
-        '../../Indications List.csv',
-        '../../Contraindications List.csv'
+        '../../input/medi/Indications List.csv',
+        '../../input/medi/Contraindications List.csv'
     ]
     
     all_drugs = set()

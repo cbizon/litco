@@ -68,7 +68,7 @@ class CurieNormalizer:
     def __init__(self):
         # Initialize robust API client
         self.api_client = RobustAPIClient(
-            "https://nodenormalization-sri.renci.org/get_normalized_nodes",
+            "https://nodenormalization-dev.apps.renci.org/get_normalized_nodes",
             max_retries=5,
             base_delay=2.0,
             max_delay=300.0
