@@ -30,8 +30,7 @@ class MissingEntityAnalyzer:
     """Analyze completely missing drugs and diseases."""
     
     def __init__(self):
-        self.coverage_dir = Path('../../analysis_results/drug_disease_coverage')
-        self.output_dir = Path('../../analysis_results/missing_entities')
+        self.output_dir = Path('analysis_results/missing_entities')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Storage for missing entities
@@ -47,7 +46,7 @@ class MissingEntityAnalyzer:
         logger.info("Extracting completely missing entities from coverage results")
         
         # Process drugs
-        drugs_file = Path("../../analysis_results/medi_inspection/medi_drugs_robokop_comparison.csv")
+        drugs_file = Path("analysis_results/medi_inspection/medi_drugs_robokop_comparison.csv")
         if drugs_file.exists():
             logger.info(f"Processing {drugs_file}")
             drugs_df = pd.read_csv(drugs_file)
@@ -67,7 +66,7 @@ class MissingEntityAnalyzer:
             logger.warning(f"Drugs coverage file not found: {drugs_file}")
         
         # Process diseases
-        diseases_file = Path("../../analysis_results/medi_inspection/medi_diseases_robokop_comparison.csv")
+        diseases_file = Path("analysis_results/medi_inspection/medi_diseases_robokop_comparison.csv")
         if diseases_file.exists():
             logger.info(f"Processing {diseases_file}")
             diseases_df = pd.read_csv(diseases_file)

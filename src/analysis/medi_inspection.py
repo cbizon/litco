@@ -80,8 +80,8 @@ def load_medi_coverage(identifiers: Dict[str, Set[str]]) -> Tuple[Dict, Dict]:
     
     # Process the same files as drug_disease_coverage.py
     input_files = [
-        '../../input/medi/Indications List.csv',
-        '../../input/medi/Contraindications List.csv'
+        'input/medi/Indications List.csv',
+        'input/medi/Contraindications List.csv'
     ]
     
     all_drugs = set()
@@ -294,11 +294,10 @@ def main():
     logger.info("Starting MEDI inspection analysis")
     
     # File paths
-    robokop_nodefile = "../../nodes.jsonl"  # New format
-    robokop_nodefile_legacy = "../../normalized_nodes.csv"  # Legacy format
-    coverage_dir = "../../analysis_results/drug_disease_coverage"
-    missing_entity_file = "../../analysis_results/missing_entities/gap_analysis_report.json"
-    output_dir = "../../analysis_results/medi_inspection"
+    robokop_nodefile = "input/robokop/nodes.jsonl"  # New format
+    robokop_nodefile_legacy = "analysis_results/raw_data_extracts/normalized_robokop_nodes.csv"  # Legacy format
+    missing_entity_file = "analysis_results/missing_entities/gap_analysis_report.json"
+    output_dir = "analysis_results/medi_inspection"
     
     # Load data - try new format first, fallback to legacy
     from pathlib import Path
