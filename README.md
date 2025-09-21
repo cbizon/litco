@@ -64,30 +64,33 @@ uv run python src/clean_omnicorp.py
 uv run python src/extract_identifiers.py
 
 # Normalize RoboKOP knowledge graph nodes  
-uv run python src/normalize_nodes.py input/robokop/nodes.jsonl normalized_nodes.csv
+uv run python src/normalize_nodes.py input/robokop/nodes.jsonl analysis_results/raw_data_extracts/normalized_robokop_nodes.csv
 ```
+
+**Outputs:**
+
+**Literature Database Cleaning (`clean_*.py`):**
+- `cleaned/ngd/ngd_cleaned.jsonl` - Normalized NGD data with standardized CURIE-to-PMID mappings
+- `cleaned/pubtator/pubtator_cleaned.jsonl` - Normalized PubTator data with entity-to-PMID mappings
+- `cleaned/omnicorp/omnicorp_cleaned.jsonl` - Normalized OmniCorp data with entity-to-PMID mappings
+- `cleaned/*/biolink_classes.json` - Biolink type classifications for each dataset
+- `cleaned/*/failed_normalizations.txt` - CURIEs that could not be normalized via NodeNormalizer API
+
+**Identifier Extraction (`extract_identifiers.py`):**
+- `analysis_results/raw_data_extracts/ngd_identifiers.pkl` - NGD identifier set (pickle format)
+- `analysis_results/raw_data_extracts/pubtator_identifiers.pkl` - PubTator identifier set (pickle format) 
+- `analysis_results/raw_data_extracts/omnicorp_identifiers.pkl` - OmniCorp identifier set (pickle format)
+- `analysis_results/raw_data_extracts/all_identifiers.pkl` - Combined identifier sets for all datasets (used by analysis scripts for efficient coverage checking)
+
+**RoboKOP Normalization (`normalize_nodes.py`):**
+- `analysis_results/raw_data_extracts/normalized_robokop_nodes.csv` - Normalized RoboKOP knowledge graph nodes with preferred CURIEs and biolink types
 
 ### Phase 3: Coverage Analysis
-
-Analyze MEDI drug-disease coverage across literature databases:
-
-```bash
-# Analyze drug-disease pair coverage across literature databases
-cd src/analysis
-uv run python drug_disease_coverage.py
-```
-
-**Output:** `analysis_results/drug_disease_coverage/`
-- `indications_coverage_analysis.csv` - Coverage of FDA/EMA approved indications
-- `contraindications_coverage_analysis.csv` - Coverage of contraindicated pairs
-
-### Phase 4: Comprehensive Entity Coverage Analysis
 
 Cross-reference MEDI entities with RoboKOP knowledge graph and generate complete coverage reports:
 
 ```bash
-cd src/analysis  
-uv run python medi_inspection.py
+uv run python src/analysis/medi_inspection.py
 ```
 
 **Purpose:** Generate comprehensive entity coverage analysis:
@@ -103,13 +106,12 @@ uv run python medi_inspection.py
 
 **Note:** These comprehensive files replace the previous `unique_drugs_coverage.csv` and `unique_diseases_coverage.csv` files, providing the same information plus RoboKOP data.
 
-### Phase 5: Missing Entity Investigation
+### Phase 4: Missing Entity Investigation
 
 Investigate entities missing from all literature databases:
 
 ```bash
-cd src/analysis
-uv run python missing_entity_analysis.py --max-entities 500 --verbose
+uv run python src/analysis/missing_entity_analysis.py --max-entities 500 --verbose
 ```
 
 **Purpose:** For entities not found in any literature database:
@@ -170,7 +172,6 @@ litco/
 │   ├── omnicorp/
 │   └── pubtator/
 ├── analysis_results/     # Analysis outputs
-│   ├── drug_disease_coverage/
 │   ├── medi_inspection/
 │   ├── missing_entities/
 │   └── raw_data_extracts/

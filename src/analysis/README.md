@@ -21,25 +21,7 @@ uv run python identifier_overlap.py
 - `overlap_by_biolink_type.csv` - Breakdown by biological entity type
 - `sample_identifiers_*.txt` - Sample identifiers from each overlap category
 
-### 2. **Drug-Disease Coverage Analysis** 
-**Script**: `drug_disease_coverage.py`
-**Purpose**: Analyzes coverage of drug-disease pairs from clinical indication and contraindication lists
-**Input**: `../../input/medi/Indications List.csv`, `../../input/medi/Contraindications List.csv`
-**Output**: `../../analysis_results/drug_disease_coverage/`
-
-```bash
-cd src/analysis  
-uv run python drug_disease_coverage.py
-```
-
-**Generates**:
-- Console coverage summary with original vs. renormalized comparisons
-- `indications_coverage_analysis.csv` - Full indication pairs with coverage columns
-- `contraindications_coverage_analysis.csv` - Full contraindication pairs with coverage columns  
-- `unique_drugs_coverage.csv` - Individual drug coverage across datasets
-- `unique_diseases_coverage.csv` - Individual disease coverage across datasets
-
-### 3. **Failed Normalization Analysis**
+### 2. **Failed Normalization Analysis**
 **Script**: `failed_normalizations.py`  
 **Purpose**: Analyzes patterns in CURIEs that failed to normalize during dataset cleaning
 **Output**: `../../analysis_results/failed_normalizations/`
@@ -78,7 +60,7 @@ Before running analysis scripts, ensure you have:
 ```
 analysis_results/
 ├── identifier_overlap/         # Cross-dataset overlap analysis
-├── drug_disease_coverage/      # Clinical pairs coverage analysis  
+  
 ├── failed_normalizations/      # Normalization failure analysis
 └── raw_data_extracts/         # Pickle files with extracted identifiers
 ```
@@ -94,7 +76,7 @@ uv run python src/extract_identifiers.py
 # 2. Run analyses (from src/analysis/ directory)
 cd src/analysis
 uv run python identifier_overlap.py
-uv run python drug_disease_coverage.py  
+  
 uv run python failed_normalizations.py
 uv run python insights.py
 ```
