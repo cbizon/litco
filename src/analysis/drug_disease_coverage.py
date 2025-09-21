@@ -13,8 +13,8 @@ Outputs summary statistics about coverage fractions.
 
 import pickle
 import pandas as pd
-import logging
 from pathlib import Path
+import logging
 from typing import Dict, Set, List, Optional
 import sys
 sys.path.append('..')
@@ -89,16 +89,15 @@ def analyze_coverage(df: pd.DataFrame, identifiers: Dict[str, Set[str]],
     for dataset in datasets:
         dataset_ids = identifiers[dataset]
         
-        # Original CURIE coverage
-        result_df[f'{dataset}_drug_present'] = result_df[drug_col].isin(dataset_ids)
-        result_df[f'{dataset}_disease_present'] = result_df[disease_col].isin(dataset_ids)
-        result_df[f'{dataset}_both_present'] = (
-            result_df[f'{dataset}_drug_present'] & result_df[f'{dataset}_disease_present']
+        # Renormalized CURIE coverage (only check if normalization succeeded)
+        result_df[f'{dataset}_renorm_drug_present'] = (
+            result_df['renormalized_drug_id'].notna() & 
+            result_df['renormalized_drug_id'].isin(dataset_ids)
         )
-        
-        # Renormalized CURIE coverage (handle NaN values)
-        result_df[f'{dataset}_renorm_drug_present'] = result_df['renormalized_drug_id'].fillna('').isin(dataset_ids)
-        result_df[f'{dataset}_renorm_disease_present'] = result_df['renormalized_disease_id'].fillna('').isin(dataset_ids)
+        result_df[f'{dataset}_renorm_disease_present'] = (
+            result_df['renormalized_disease_id'].notna() & 
+            result_df['renormalized_disease_id'].isin(dataset_ids)
+        )
         result_df[f'{dataset}_renorm_both_present'] = (
             result_df[f'{dataset}_renorm_drug_present'] & result_df[f'{dataset}_renorm_disease_present']
         )
@@ -116,36 +115,22 @@ def print_coverage_summary(df: pd.DataFrame, file_type: str):
     
     datasets = ['ngd', 'pubtator', 'omnicorp']
     
-    # Original CURIEs coverage
-    print(f"\n🔤 ORIGINAL CURIE COVERAGE:")
+    # Normalized CURIEs coverage 
+    print(f"\n🔄 NORMALIZED CURIE COVERAGE:")
     print(f"{'Dataset':<12} {'Drug':>8} {'Disease':>8} {'Both':>8} {'Both %':>8}")
     print("-" * 60)
     
     for dataset in datasets:
-        drug_count = df[f'{dataset}_drug_present'].sum()
-        disease_count = df[f'{dataset}_disease_present'].sum()
-        both_count = df[f'{dataset}_both_present'].sum()
+        drug_count = df[f'{dataset}_renorm_drug_present'].sum()
+        disease_count = df[f'{dataset}_renorm_disease_present'].sum()
+        both_count = df[f'{dataset}_renorm_both_present'].sum()
         both_pct = (both_count / total_pairs * 100) if total_pairs > 0 else 0
         
         print(f"{dataset.upper():<12} {drug_count:>8,} {disease_count:>8,} {both_count:>8,} {both_pct:>7.1f}%")
     
-    # Renormalized CURIEs coverage (only if renormalized columns exist)
-    if 'renormalized_drug_id' in df.columns:
-        print(f"\n🔄 RENORMALIZED CURIE COVERAGE:")
-        print(f"{'Dataset':<12} {'Drug':>8} {'Disease':>8} {'Both':>8} {'Both %':>8}")
-        print("-" * 60)
-        
-        for dataset in datasets:
-            drug_count = df[f'{dataset}_renorm_drug_present'].sum()
-            disease_count = df[f'{dataset}_renorm_disease_present'].sum()
-            both_count = df[f'{dataset}_renorm_both_present'].sum()
-            both_pct = (both_count / total_pairs * 100) if total_pairs > 0 else 0
-            
-            print(f"{dataset.upper():<12} {drug_count:>8,} {disease_count:>8,} {both_count:>8,} {both_pct:>7.1f}%")
-    
-    # Cross-dataset analysis (use renormalized if available, otherwise original)
-    suffix = '_renorm_both_present' if 'renormalized_drug_id' in df.columns else '_both_present'
-    coverage_type = "RENORMALIZED" if 'renormalized_drug_id' in df.columns else "ORIGINAL"
+    # Cross-dataset analysis (normalized data only)
+    suffix = '_renorm_both_present'
+    coverage_type = "NORMALIZED"
     
     print(f"\n🔗 CROSS-DATASET COVERAGE ({coverage_type}):")
     print("-" * 50)
@@ -182,141 +167,7 @@ def print_coverage_summary(df: pd.DataFrame, file_type: str):
     print(f"PubTator only: {pubtator_only.sum():,} pairs")
     print(f"OmniCorp only: {omnicorp_only.sum():,} pairs")
     
-    # Improvement analysis (only if renormalized columns exist)
-    if 'renormalized_drug_id' in df.columns:
-        print(f"\n📈 IMPROVEMENT FROM RENORMALIZATION:")
-        print("-" * 50)
-        
-        for dataset in datasets:
-            orig_both = df[f'{dataset}_both_present'].sum()
-            renorm_both = df[f'{dataset}_renorm_both_present'].sum()
-            improvement = renorm_both - orig_both
-            improvement_pct = (improvement / orig_both * 100) if orig_both > 0 else 0
-            
-            print(f"{dataset.upper():<12}: {orig_both:>6,} → {renorm_both:>6,} (+{improvement:>4,}, {improvement_pct:>+5.1f}%)")
 
-
-def create_unique_entity_files(all_dfs: list, identifiers: Dict[str, Set[str]], 
-                              normalizer: CurieNormalizer):
-    """Create files with unique drugs and diseases and their dataset coverage."""
-    logger.info("Creating unique entity coverage files")
-    
-    # Collect all unique drugs and diseases
-    all_drugs = set()
-    all_diseases = set()
-    drug_labels = {}
-    disease_labels = {}
-    
-    for df in all_dfs:
-        drug_col = 'final normalized drug id'
-        drug_label_col = 'final normalized drug label'
-        disease_col = 'final normalized disease id'
-        disease_label_col = 'final normalized disease label'
-        
-        # Collect drug IDs and labels
-        for _, row in df.iterrows():
-            if pd.notna(row[drug_col]):
-                drug_id = row[drug_col]
-                all_drugs.add(drug_id)
-                if pd.notna(row[drug_label_col]):
-                    drug_labels[drug_id] = row[drug_label_col]
-        
-        # Collect disease IDs and labels
-        for _, row in df.iterrows():
-            if pd.notna(row[disease_col]):
-                disease_id = row[disease_col]
-                all_diseases.add(disease_id)
-                if pd.notna(row[disease_label_col]):
-                    disease_labels[disease_id] = row[disease_label_col]
-    
-    logger.info(f"Found {len(all_drugs)} unique drugs and {len(all_diseases)} unique diseases")
-    
-    # Normalize the unique entities
-    logger.info("Normalizing unique drugs")
-    drug_normalizations = normalizer.normalize_curies(list(all_drugs), {})
-    
-    logger.info("Normalizing unique diseases")
-    disease_normalizations = normalizer.normalize_curies(list(all_diseases), {})
-    
-    # Create drugs coverage file
-    drugs_data = []
-    for drug_id in sorted(all_drugs):
-        renorm_drug_id = drug_normalizations.get(drug_id)
-        row = {
-            'drug_id': drug_id,
-            'drug_label': drug_labels.get(drug_id, ''),
-            'renormalized_drug_id': renorm_drug_id,
-            'ngd_present': drug_id in identifiers['ngd'],
-            'pubtator_present': drug_id in identifiers['pubtator'],
-            'omnicorp_present': drug_id in identifiers['omnicorp'],
-            'ngd_renorm_present': renorm_drug_id in identifiers['ngd'] if renorm_drug_id else False,
-            'pubtator_renorm_present': renorm_drug_id in identifiers['pubtator'] if renorm_drug_id else False,
-            'omnicorp_renorm_present': renorm_drug_id in identifiers['omnicorp'] if renorm_drug_id else False
-        }
-        drugs_data.append(row)
-    
-    drugs_df = pd.DataFrame(drugs_data)
-    drugs_output = '../../analysis_results/drug_disease_coverage/unique_drugs_coverage.csv'
-    logger.info(f"Saving unique drugs coverage to {drugs_output}")
-    drugs_df.to_csv(drugs_output, index=False)
-    
-    # Create diseases coverage file
-    diseases_data = []
-    for disease_id in sorted(all_diseases):
-        renorm_disease_id = disease_normalizations.get(disease_id)
-        row = {
-            'disease_id': disease_id,
-            'disease_label': disease_labels.get(disease_id, ''),
-            'renormalized_disease_id': renorm_disease_id,
-            'ngd_present': disease_id in identifiers['ngd'],
-            'pubtator_present': disease_id in identifiers['pubtator'],
-            'omnicorp_present': disease_id in identifiers['omnicorp'],
-            'ngd_renorm_present': renorm_disease_id in identifiers['ngd'] if renorm_disease_id else False,
-            'pubtator_renorm_present': renorm_disease_id in identifiers['pubtator'] if renorm_disease_id else False,
-            'omnicorp_renorm_present': renorm_disease_id in identifiers['omnicorp'] if renorm_disease_id else False
-        }
-        diseases_data.append(row)
-    
-    diseases_df = pd.DataFrame(diseases_data)
-    diseases_output = '../../analysis_results/drug_disease_coverage/unique_diseases_coverage.csv'
-    logger.info(f"Saving unique diseases coverage to {diseases_output}")
-    diseases_df.to_csv(diseases_output, index=False)
-    
-    # Print summary stats for unique entities
-    print(f"\n📋 UNIQUE ENTITY COVERAGE SUMMARY")
-    print("=" * 60)
-    print(f"Unique drugs: {len(all_drugs):,}")
-    print(f"Unique diseases: {len(all_diseases):,}")
-    
-    datasets = ['ngd', 'pubtator', 'omnicorp']
-    
-    print(f"\n🔬 DRUG COVERAGE BY DATASET (ORIGINAL):")
-    print("-" * 50)
-    for dataset in datasets:
-        count = drugs_df[f'{dataset}_present'].sum()
-        pct = (count / len(all_drugs) * 100) if all_drugs else 0
-        print(f"{dataset.upper():<12}: {count:>6,}/{len(all_drugs):,} ({pct:>5.1f}%)")
-    
-    print(f"\n🔬 DRUG COVERAGE BY DATASET (RENORMALIZED):")
-    print("-" * 50)
-    for dataset in datasets:
-        count = drugs_df[f'{dataset}_renorm_present'].sum()
-        pct = (count / len(all_drugs) * 100) if all_drugs else 0
-        print(f"{dataset.upper():<12}: {count:>6,}/{len(all_drugs):,} ({pct:>5.1f}%)")
-    
-    print(f"\n🦠 DISEASE COVERAGE BY DATASET (ORIGINAL):")
-    print("-" * 50)
-    for dataset in datasets:
-        count = diseases_df[f'{dataset}_present'].sum()
-        pct = (count / len(all_diseases) * 100) if all_diseases else 0
-        print(f"{dataset.upper():<12}: {count:>6,}/{len(all_diseases):,} ({pct:>5.1f}%)")
-    
-    print(f"\n🦠 DISEASE COVERAGE BY DATASET (RENORMALIZED):")
-    print("-" * 50)
-    for dataset in datasets:
-        count = diseases_df[f'{dataset}_renorm_present'].sum()
-        pct = (count / len(all_diseases) * 100) if all_diseases else 0
-        print(f"{dataset.upper():<12}: {count:>6,}/{len(all_diseases):,} ({pct:>5.1f}%)")
 
 
 def main():
@@ -338,8 +189,6 @@ def main():
         'contraindications': '../../Contraindications List.csv'
     }
     
-    # Store all dataframes for unique entity analysis
-    all_dfs = []
     
     # Process each file
     for file_type, filename in input_files.items():
@@ -369,9 +218,6 @@ def main():
             logger.error(f"Found: {list(df.columns)}")
             continue
         
-        # Store original df for unique entity analysis
-        all_dfs.append(df.copy())
-        
         # Remove rows with missing drug or disease IDs
         original_len = len(df)
         df = df.dropna(subset=[drug_col, disease_col])
@@ -384,19 +230,21 @@ def main():
         # Analyze coverage (now includes both original and renormalized)
         result_df = analyze_coverage(df, identifiers, drug_col, disease_col)
         
+        
         # Save results
         output_filename = f"../../analysis_results/drug_disease_coverage/{file_type}_coverage_analysis.csv"
+        
+        # Create output directory if it doesn't exist
+        Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
+        
         logger.info(f"Saving results to {output_filename}")
         result_df.to_csv(output_filename, index=False)
         
         # Print summary
         print_coverage_summary(result_df, file_type)
     
-    # Create unique entity coverage files
-    if all_dfs:
-        create_unique_entity_files(all_dfs, identifiers, normalizer)
-    
     logger.info("\nAnalysis complete!")
+    logger.info("For detailed entity coverage with RoboKOP data, run: python medi_inspection.py")
 
 
 if __name__ == "__main__":
