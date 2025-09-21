@@ -75,7 +75,7 @@ def build_all_pmid_indexes():
         'OmniCorp': Path('cleaned/omnicorp/omnicorp_cleaned.jsonl')
     }
     
-    output_dir = Path('analysis_results/pmid_indexes')
+    output_dir = Path('../../analysis_results/pmid_indexes')
     output_dir.mkdir(parents=True, exist_ok=True)
     
     all_indexes = {}
