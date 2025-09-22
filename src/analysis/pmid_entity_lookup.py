@@ -26,16 +26,16 @@ class PMIDEntityLookup:
         """Initialize with paths to our cleaned datasets."""
         self.dataset_paths = {
             'NGD': {
-                'jsonl': Path('../../cleaned/ngd/ngd_cleaned.jsonl'),
-                'sqlite': Path('../../cleaned/ngd/ngd_cleaned.sqlite')
+                'jsonl': Path('cleaned/ngd/ngd_cleaned.jsonl'),
+                'sqlite': Path('cleaned/ngd/ngd_cleaned.sqlite')
             },
             'PubTator': {
-                'jsonl': Path('../../cleaned/pubtator/pubtator_cleaned.jsonl'),
-                'sqlite': Path('../../cleaned/pubtator/pubtator_cleaned.sqlite')
+                'jsonl': Path('cleaned/pubtator/pubtator_cleaned.jsonl'),
+                'sqlite': Path('cleaned/pubtator/pubtator_cleaned.sqlite')
             },
             'OmniCorp': {
-                'jsonl': Path('../../cleaned/omnicorp/omnicorp_cleaned.jsonl'),
-                'sqlite': Path('../../cleaned/omnicorp/omnicorp_cleaned.sqlite')
+                'jsonl': Path('cleaned/omnicorp/omnicorp_cleaned.jsonl'),
+                'sqlite': Path('cleaned/omnicorp/omnicorp_cleaned.sqlite')
             }
         }
         
@@ -56,8 +56,7 @@ class PMIDEntityLookup:
         sqlite_path = self.dataset_paths[dataset_name]['sqlite']
         
         if not sqlite_path.exists():
-            logger.warning(f"SQLite file not found for {dataset_name}: {sqlite_path}")
-            return set()
+            raise FileNotFoundError(f"Required SQLite file not found for {dataset_name}: {sqlite_path}")
         
         try:
             conn = sqlite3.connect(sqlite_path)
@@ -93,8 +92,7 @@ class PMIDEntityLookup:
         jsonl_path = self.dataset_paths[dataset_name]['jsonl']
         
         if not jsonl_path.exists():
-            logger.warning(f"JSONL file not found for {dataset_name}: {jsonl_path}")
-            return set()
+            raise FileNotFoundError(f"Required JSONL file not found for {dataset_name}: {jsonl_path}")
         
         entities = set()
         target_pmid = f"PMID:{pmid}"
@@ -215,8 +213,7 @@ class PMIDEntityLookup:
         jsonl_path = self.dataset_paths[dataset_name]['jsonl']
         
         if not jsonl_path.exists():
-            logger.warning(f"JSONL file not found for {dataset_name}: {jsonl_path}")
-            return {}
+            raise FileNotFoundError(f"Required JSONL file not found for {dataset_name}: {jsonl_path}")
         
         pmid_to_entities = defaultdict(set)
         entities_found = 0
